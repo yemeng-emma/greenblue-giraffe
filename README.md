@@ -1,5 +1,5 @@
 # greenblue-giraffe
-The research project studying the "spin-out" of social and health care to social enterprise CIC.
+Dissertation Paper 1: nonprofit commercialization and its implications for social performance in U.S. Arts and Culture organizations
 
 ### Note on the "Greenblue Giraffe" project name
 
