@@ -1,0 +1,368 @@
+---
+title: "Data cleanning"
+author: "Meng Ye"
+date: "6/20/2025"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+options(scipen = 999)
+```
+
+
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plm)
+library(tidyverse)
+library(modelsummary)
+library(readxl)
+library(lme4)
+library(brms)
+library(equatiomatic)
+library(broom.mixed)
+library(tidybayes)
+library(marginaleffects)
+library(MetBrewer)
+library(here)
+```
+
+
+```{r load-clean-data, warning=FALSE, message=FALSE}
+# Load original data
+arts_raw <- read_csv(here("data", "arts_raw.csv"))
+## CPI data
+cpi <- read_csv(here("data", "cpi.csv"))
+```
+
+
+```{r}
+# select columns to use in the preliminary analysis 
+arts_selected <- arts_raw %>% 
+  select(year = fiscal_year, 
+         ein = organizations_tax_id, 
+         founded = organizations_year_founded,
+         board_size = organizations_nmbr_board_members,
+         sub_field = organizations_cdp_taxonomy_name,
+         rbi = total_earned_revenue_operating_program,
+         ubi = total_earned_revenue_operating_non_program,
+         total_contribution = total_contributed_revenue_formula,
+         total_government_support = supp_gov_total,
+         total_investment = investment_income_total, #negative value 
+         total_revenue = total_revenue_formula,
+         total_expenses = total_expenses_formula,
+         total_paid_attendees,
+         total_free_attendees,
+         total_attendees,
+         volunteers_total,
+         total_employees_people,
+         total_community_programs_occurrences)
+```
+
+
+```{r}
+# data cleaning 
+value_2010 <- cpi %>% 
+  filter(Year == 2010) %>% 
+  pull(CPI)
+# inflation adjustment and standardize (due to the negative observation)
+
+arts <- arts_selected %>% 
+  left_join(cpi, by = c("year" = "Year")) %>% 
+  mutate(cpi2010 = CPI/value_2010) %>% 
+  mutate(across(c(rbi, ubi, total_contribution, total_government_support, total_investment,
+                  total_revenue, total_expenses), ~ ./cpi2010, .names = "{.col}_adjusted")) %>% 
+  mutate(age = year-founded,
+         across(where(is.numeric), ~ ifelse(is.na(.x), 0, .x)),
+         across(where(is.numeric), ~ ifelse(.x < 0, NA, .x)),
+         free_ratio = total_free_attendees/total_attendees * 100,
+         rbi_share = rbi/total_revenue * 100,
+         ubi_share = ubi/total_revenue * 100,
+         log_attendee = log(total_attendees),
+         log_free_attendee = log(total_free_attendees),
+         total_attendee_std = scale(total_attendees),
+         free_attendee_std = scale(total_free_attendees),
+         log_contribution = log(total_contribution_adjusted),
+         total_contribution_std = scale(total_contribution_adjusted),
+         total_revenue_std = scale(total_revenue_adjusted),
+         log_expenses = log(total_expenses_adjusted),
+         total_expenses_std = scale(total_expenses_adjusted),
+         log_gov_support = log(total_government_support_adjusted),
+         total_gov_std = scale(total_government_support_adjusted),
+         ubi_std = scale(ubi_adjusted),
+         rbi_std = scale(rbi_adjusted),
+         log_employee = log(total_employees_people),
+         total_employee_std = scale(total_employees_people),
+         ein = factor(ein)) %>% 
+  mutate(across(where(is.numeric), ~ ifelse(.x == Inf | .x == -Inf , 0, .x))) %>%  
+  filter(year >= 2010)
+
+```
+
+## remove NA values in the panel data 
+
+```{r}
+arts_clean <- arts %>%
+  filter(!is.na(ein), !is.na(year)) %>%
+  distinct(ein, year, .keep_all = TRUE)  # Remove duplicate entity-year observations
+```
+
+```{r}
+n_distinct(arts$ein)
+```
+```{r}
+summary(arts)
+```
+
+CPI data source: https://www.minneapolisfed.org/about-us/monetary-policy/inflation-calculator/consumer-price-index-1913-
+
+## Visual
+
+The general year trend
+
+```{r fig.height=5, fig.width=8}
+plot_attend_year <- ggplot(filter(arts, sub_field!="Unknown/Unclassified"),
+                           aes(x = factor(year), y = total_attendees))+
+  geom_boxplot() +
+  coord_cartesian(ylim = c(0, 40000)) +
+  facet_wrap(vars(sub_field)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))
+plot_attend_year
+```
+
+
+```{r fig.height=5, fig.width=8}
+plot_free_year <- ggplot(filter(arts, sub_field!="Unknown/Unclassified"),
+                           aes(x = factor(year), y = total_free_attendees))+
+  geom_boxplot() +
+    coord_cartesian(ylim = c(0, 40000)) +
+
+  facet_wrap(vars(sub_field)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))
+plot_free_year
+```
+
+
+```{r fig.height=5, fig.width=8}
+plot_free_year2 <- ggplot(filter(arts, sub_field!="Unknown/Unclassified"),
+                           aes(x = factor(year), y = free_ratio))+
+  geom_boxplot() +
+  facet_wrap(vars(sub_field)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))
+plot_free_year2
+```
+
+## ploting the coefficients
+
+```{r}
+plot_total_ubi <- ggplot(filter(arts, sub_field!="Unknown/Unclassified"),
+                        aes(x = ubi_share, y = log_attendee, color = sub_field))+
+  geom_point(size = 0.1) +
+  geom_smooth(se = F, color = "black", size = 0.7) +
+  coord_cartesian(xlim = c(0, 100), ylim = c(0, 20)) +
+  scale_color_manual(values=met.brewer("Hokusai1", 6)) +
+  
+  guides(color = FALSE) +
+  facet_wrap(vars(sub_field)) +
+  theme_bw()
+plot_total_ubi
+```
+
+```{r}
+plot_total_rbi <- ggplot(filter(arts, sub_field!="Unknown/Unclassified"),
+                        aes(x = rbi_share, y = log_attendee, color = sub_field))+
+  geom_point(size = 0.1) +
+  geom_smooth( se = F, color = "black", size = 0.7) +
+  coord_cartesian(xlim = c(0, 100), ylim = c(0, 25)) +
+  scale_color_manual(values=met.brewer("Hokusai1", 6)) +
+  
+  guides(color = FALSE) +
+  facet_wrap(vars(sub_field)) +
+  theme_bw()
+plot_total_rbi
+```
+
+
+
+
+## Descriptive results
+
+```{r}
+datasummary(
+  log_attendee + log_free_attendee + ubi_share + rbi_share + age + log_contribution + 
+  log_gov_support + log_expenses + log_employee ~ Median + Mean + SD + N,
+  data = arts,
+  title = "Descriptive Statistics of Regression Variables"
+)
+```
+
+
+## Model fitting 
+
+## lmer models
+
+
+```{r}
+model_total_attendee <- lmer(log_attendee ~ ubi_share + rbi_share +  (1 | year) + age +
+                    (1 | sub_field/ein) + log_contribution  + log_gov_support + log_expenses + log_employee,
+                     data = arts_clean)
+```
+
+```{r}
+modelsummary(list("total attendance" = model_total_attendee),
+
+             statistic = "({p.value}) {stars}")
+```
+
+
+
+```{r}
+model_free_attend <- lmer(log_free_attendee ~ ubi_share + rbi_share +  (1 | year) + age +
+                    (1 | sub_field/ein) + log_contribution  + log_gov_support + log_expenses + log_employee,
+                     data = arts_clean)
+```
+
+
+```{r}
+modelsummary(list("total attendance" = model_total_attendee, "free attendance" = model_free_attend),
+             coef_omit = "sub_field",
+             statistic = "({p.value}) {stars}")
+```
+
+
+
+```{r}
+ubi_detail <- arts_raw %>% select(rev_other_earned_description) %>% 
+  drop_na() %>% 
+  distinct()
+```
+
+
+```{r}
+#save data
+write_csv(ubi_detail, "ubi_descriptions.csv")
+```
+
+
+
+
+```{r}
+
+# Step 1: Clean data to remove NA in index variables (moved up)
+
+
+# Step 2: Original mixed-effects model (using cleaned data)
+model_total_attendee <- lmer(
+  log_attendee ~ ubi_share + rbi_share + (1 | year) + age +
+  (1 | sub_field/ein) + log_contribution + log_gov_support + log_expenses + log_employee,
+  data = arts_clean
+)
+
+# Step 3: Panel data model with two-way fixed effects
+arts_panel <- pdata.frame(arts_clean, index = c("ein", "year"))
+model_plm <- plm(
+  log_attendee ~ ubi_share + rbi_share + age + 
+  log_contribution + log_gov_support + log_expenses + log_employee,
+  data = arts_panel,
+  model = "within",
+  effect = "twoways"
+)
+
+# Step 4: Create comparison table with clustered SEs for panel model
+modelsummary(
+  list(
+    "Original (Mixed Effects)" = model_total_attendee,
+    "Robust (Two-way FE)" = model_plm
+  ),
+  statistic = "({p.value}) {stars}",
+  vcov = list(
+    NULL,  # Default SEs for mixed model
+    function(x) vcovHC(x, method = "arellano", type = "HC1", cluster = "group")
+  ),
+  stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+  title = "Robustness Check Comparison",
+  notes = c(
+    "Both models use identical sample (N = ", nobs(model_plm), " observations)",
+    "Mixed effects: Random intercepts for year and nested sub_field/ein",
+    "Panel model: Two-way fixed effects (entity and year) with clustered SEs"
+  ),
+  coef_rename = c(
+    "ubi_share" = "UBI Share",
+    "rbi_share" = "RBI Share",
+    "age" = "Organization Age",
+    "log_contribution" = "Log Contributions",
+    "log_gov_support" = "Log Government Support",
+    "log_expenses" = "Log Expenses",
+    "log_employee" = "Log Employees"
+  ),
+  gof_map = c("nobs", "r.squared", "adj.r.squared")
+)
+
+# Step 5: Verify identical samples
+#cat("\n\nSample size verification:
+#  Mixed model:", nobs(model_total_attendee), "observations
+#  Panel model :", nobs(model_plm), "observations\n")
+
+# Optional: Hausman test for FE vs RE specification
+# Only valid if both models estimate same parameters
+#if(length(fixef(model_total_attendee)) == length(coef(model_plm))) {
+#  hausman_test <- phtest(model_plm, update(model_plm, model = "random"))
+# print(hausman_test)
+#}
+```
+
+```{r}
+
+
+# Step 2: Original mixed-effects model (using cleaned data)
+model_free_attendee <- lmer(
+  log_free_attendee ~ ubi_share + rbi_share + (1 | year) + age +
+  (1 | sub_field/ein) + log_contribution + log_gov_support + log_expenses + log_employee,
+  data = arts_clean
+)
+
+# Step 3: Panel data model with two-way fixed effects
+model_free_plm <- plm(
+  log_free_attendee ~ ubi_share + rbi_share + age + 
+  log_contribution + log_gov_support + log_expenses + log_employee,
+  data = arts_panel,
+  model = "within",
+  effect = "twoways"
+)
+
+# Step 4: Create comparison table with clustered SEs for panel model
+modelsummary(
+  list(
+    "Original (Mixed Effects)" = model_free_attendee,
+    "Robust (Two-way FE)" = model_free_plm
+  ),
+  statistic = "({p.value}) {stars}",
+  vcov = list(
+    NULL,  # Default SEs for mixed model
+    function(x) vcovHC(x, method = "arellano", type = "HC1", cluster = "group")
+  ),
+  stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+  title = "Robustness Check Comparison",
+  notes = c(
+    "Both models use identical sample (N = ", nobs(model_plm), " observations)",
+    "Mixed effects: Random intercepts for year and nested sub_field/ein",
+    "Panel model: Two-way fixed effects (entity and year) with clustered SEs"
+  ),
+  coef_rename = c(
+    "ubi_share" = "UBI Share",
+    "rbi_share" = "RBI Share",
+    "age" = "Organization Age",
+    "log_contribution" = "Log Contributions",
+    "log_gov_support" = "Log Government Support",
+    "log_expenses" = "Log Expenses",
+    "log_employee" = "Log Employees"
+  ),
+  gof_map = c("nobs", "r.squared", "adj.r.squared")
+)
+
+```

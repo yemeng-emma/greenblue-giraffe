@@ -1,3 +1,14 @@
+# Data stuff
+data/*
+# data/raw_data/
+# data/manual_data/*
+
+# Output
+output/*
+
+# Sandbox folder
+sandbox/*
+
 # History files
 .Rhistory
 .Rapp.history
